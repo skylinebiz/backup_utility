@@ -753,16 +753,16 @@ def create_backup_log(doc):
 
         if cint(doc.delete_local):
             log.process_type = (
-                "Local Backup and Upload and Delete Local"
+                "Local, Upload and Delete"
             )
         else:
             log.process_type = (
-                "Local Backup and Upload"
+                "Local and Upload"
             )
 
     else:
 
-        log.process_type = "Local Backup"
+        log.process_type = "Local"
 
     log.backup_status = "Failed"
     log.upload_status = None
