@@ -1,0 +1,143 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 1,
+ "autoname": "BL-.YY.-.MM.-.DD.-.####",
+ "creation": "2026-08-13 14:54:59.821540",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "backup_log_section",
+  "backup_utility",
+  "process_type",
+  "log_section",
+  "backup_status",
+  "backup_at",
+  "backup_error",
+  "column_break_wzfg",
+  "upload_status",
+  "upload_at",
+  "upload_error",
+  "delete_local",
+  "process_section",
+  "process_log"
+ ],
+ "fields": [
+  {
+   "fieldname": "backup_log_section",
+   "fieldtype": "Section Break",
+   "label": "Backup Log"
+  },
+  {
+   "fieldname": "backup_utility",
+   "fieldtype": "Link",
+   "label": "Backup Utility",
+   "options": "Backup Utility",
+   "read_only": 1
+  },
+  {
+   "fieldname": "process_type",
+   "fieldtype": "Select",
+   "label": "Process",
+   "options": "Local\nLocal and Upload\nLocal, Upload and Delete",
+   "read_only": 1
+  },
+  {
+   "fieldname": "log_section",
+   "fieldtype": "Section Break",
+   "label": "Log"
+  },
+  {
+   "fieldname": "backup_status",
+   "fieldtype": "Select",
+   "label": "Backup Status",
+   "options": "Pending\nSuccess\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "backup_at",
+   "fieldtype": "Datetime",
+   "label": "Backup At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "backup_error",
+   "fieldtype": "Small Text",
+   "label": "Backup Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_wzfg",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.process_type != 'Local Backup'",
+   "fieldname": "upload_status",
+   "fieldtype": "Select",
+   "label": "Upload Status",
+   "options": "Pending\nSuccess\nFailed",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.process_type != 'Local Backup'",
+   "fieldname": "upload_at",
+   "fieldtype": "Datetime",
+   "label": "Upload At",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.process_type != 'Local Backup'",
+   "fieldname": "upload_error",
+   "fieldtype": "Small Text",
+   "label": "Upload Error",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.process_type != 'Local Backup'",
+   "fieldname": "delete_local",
+   "fieldtype": "Check",
+   "label": "Delete Local after Upload",
+   "read_only": 1
+  },
+  {
+   "fieldname": "process_section",
+   "fieldtype": "Section Break",
+   "label": "Process"
+  },
+  {
+   "fieldname": "process_log",
+   "fieldtype": "Long Text",
+   "label": "Process Log",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-13 15:50:49.221009",
+ "modified_by": "Administrator",
+ "module": "Backup Utility",
+ "name": "Backup Log",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,195 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 1,
+ "creation": "2026-08-12 12:40:36.712898",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "when",
+  "column_break_wixb",
+  "include_files",
+  "maximum_backup_size_mb",
+  "backup_log",
+  "upload_config_section",
+  "upload",
+  "host",
+  "port",
+  "column_break_aqjl",
+  "delete_local",
+  "username",
+  "password",
+  "path",
+  "backup_status_section",
+  "last_backup_at",
+  "last_backup_status",
+  "last_backup_error",
+  "column_break_heyy",
+  "last_upload_at",
+  "last_upload_status",
+  "last_upload_error"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "when",
+   "fieldtype": "Time",
+   "label": "When"
+  },
+  {
+   "fieldname": "last_backup_at",
+   "fieldtype": "Datetime",
+   "label": "Last Backup at",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "include_files",
+   "fieldtype": "Check",
+   "label": "Include Files?"
+  },
+  {
+   "fieldname": "last_backup_status",
+   "fieldtype": "Select",
+   "label": "Last Backup Status",
+   "options": "Pending\nSuccess\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_backup_error",
+   "fieldtype": "Small Text",
+   "label": "Last Backup Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "upload_config_section",
+   "fieldtype": "Section Break",
+   "label": "Upload Config"
+  },
+  {
+   "default": "0",
+   "fieldname": "upload",
+   "fieldtype": "Check",
+   "label": "Upload?"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "host",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Host"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "port",
+   "fieldtype": "Int",
+   "label": "Port"
+  },
+  {
+   "fieldname": "column_break_aqjl",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "label": "Username"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "password",
+   "fieldtype": "Password",
+   "label": "Password"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "path",
+   "fieldtype": "Data",
+   "label": "Path"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "delete_local",
+   "fieldtype": "Check",
+   "label": "Delete Local Backup after Upload"
+  },
+  {
+   "fieldname": "backup_status_section",
+   "fieldtype": "Section Break",
+   "label": "Latest Status"
+  },
+  {
+   "fieldname": "column_break_wixb",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_upload_status",
+   "fieldtype": "Select",
+   "label": "Last Upload Status",
+   "options": "Pending\nSuccess\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_upload_at",
+   "fieldtype": "Datetime",
+   "label": "Last Upload At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_upload_error",
+   "fieldtype": "Small Text",
+   "label": "Last Upload Error",
+   "read_only": 1
+  },
+  {
+   "description": "Maximum total size allowed for local backup files. Oldest files are deleted when this limit is exceeded.",
+   "fieldname": "maximum_backup_size_mb",
+   "fieldtype": "Int",
+   "label": "Maximum Backup Size (MB)"
+  },
+  {
+   "fieldname": "backup_log",
+   "fieldtype": "Link",
+   "label": "Backup Log",
+   "options": "Backup Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_heyy",
+   "fieldtype": "Column Break"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-08-13 15:49:47.475485",
+ "modified_by": "Administrator",
+ "module": "Backup Utility",
+ "name": "Backup Utility",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
