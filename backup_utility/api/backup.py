@@ -14,54 +14,43 @@ def enqueue_scheduled_backup():
     doc = get_backup_utility()
 
     if not cint(doc.enabled):
+        frappe.log_error(
+            title="Backup Utility - Scheduler Skipped",
+            message="Backup Utility is disabled.",
+        )
         return
 
     if not doc.when:
+        frappe.log_error(
+            title="Backup Utility - Scheduler Skipped",
+            message="Backup Utility has no configured time.",
+        )
         return
-
-    now = now_datetime()
-
-    # Frappe Time field is normally returned as HH:MM:SS
-    configured_time = str(doc.when)
-
-    current_time = now.strftime("%H:%M")
-
-    configured_time = configured_time[:5]
-
-    if current_time != configured_time:
-        return
-
-    # Prevent duplicate execution during the same minute/day.
-    lock_key = "backup_utility_last_enqueued"
-
-    last_enqueued = frappe.cache().get_value(lock_key)
-
-    current_key = now.strftime("%Y-%m-%d %H:%M")
-
-    if last_enqueued == current_key:
-        return
-
-    frappe.cache().set_value(
-        lock_key,
-        current_key,
-        expires_in_sec=120,
-    )
 
     frappe.log_error(
-        title="Backup Utility - Queue Loaded",
+        title="Backup Utility - Scheduler Triggered",
         message=(
-            f"Backup scheduled for {configured_time}. "
-            f"Current time: {current_time}. "
-            f"execute_backup() was queued."
+            f"Site: {frappe.local.site}\n"
+            f"Configured Time: {doc.when}\n"
+            f"Queueing execute_backup on long queue."
         ),
     )
 
-    frappe.enqueue(
+    job = frappe.enqueue(
         "backup_utility.api.backup.execute_backup",
         queue="long",
         timeout=3600,
-        job_name="backup_utility_scheduled_backup",
+        job_name=f"backup_utility_scheduled_backup:{frappe.local.site}",
         at_front=True,
+    )
+
+    frappe.log_error(
+        title="Backup Utility - Backup Queued",
+        message=(
+            f"Site: {frappe.local.site}\n"
+            f"Job ID: {job.id if job else 'UNKNOWN'}\n"
+            f"Queue: long"
+        ),
     )
 
 
@@ -621,10 +610,16 @@ def run_backup():
             else:
 
                 log.upload_status = "Failed"
-
+                log.upload_at = now_datetime()
                 log.upload_error = (
                     "One or more backup files "
                     "failed to upload."
+                )
+
+                frappe.db.set_single_value(
+                    "Backup Utility",
+                    "last_upload_at",
+                    now_datetime()
                 )
 
                 frappe.db.set_single_value(
@@ -719,11 +714,38 @@ def run_backup():
 @frappe.whitelist()
 def execute_backup():
 
-    run_backup()
+    frappe.log_error(
+        title="Backup Utility - Execute Started",
+        message=(
+            f"Site: {frappe.local.site}\n"
+            f"User: {frappe.session.user}"
+        ),
+    )
 
-    return {
-        "success": True
-    }
+    try:
+
+        result = run_backup()
+
+        frappe.log_error(
+            title="Backup Utility - Execute Finished",
+            message=(
+                f"Site: {frappe.local.site}\n"
+                f"Result: {result}"
+            ),
+        )
+
+        return {
+            "success": True
+        }
+
+    except Exception:
+
+        frappe.log_error(
+            title="Backup Utility - Execute Failed",
+            message=frappe.get_traceback(),
+        )
+
+        raise
 
 
 def append_process_log(log, message):

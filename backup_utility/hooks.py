@@ -257,10 +257,10 @@ app_license = "mit"
 # ignore_translatable_strings_from = []
 
 
-scheduler_events = {
-    "cron": {
-        "* * * * *": [
-            "backup_utility.api.backup.enqueue_scheduled_backup"
-        ]
-    }
-}
+# scheduler_events = {
+#     "cron": {
+#         "* * * * *": [
+#             "backup_utility.api.backup.enqueue_scheduled_backup"
+#         ]
+#     }
+# }
