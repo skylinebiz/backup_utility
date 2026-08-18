@@ -3,37 +3,35 @@ import frappe
 import ftplib
 import os
 import subprocess
+import time
 from pathlib import Path
 from datetime import datetime
 
 from frappe import _
 from frappe.utils import cint, now_datetime, get_time, flt
 
+logger = frappe.logger("backup_utility")
+
+
 def ftp_backup_cron():
 
     doc = get_backup_utility()
 
     if not cint(doc.enabled):
-        frappe.log_error(
-            title="Backup Utility - Scheduler Skipped",
-            message="Backup Utility is disabled.",
+        logger.info(
+            "Backup Utility - Scheduler skipped: Backup Utility is disabled."
         )
         return
 
     if not doc.when:
-        frappe.log_error(
-            title="Backup Utility - Scheduler Skipped",
-            message="Backup Utility has no configured time.",
+        logger.info(
+            "Backup Utility - Scheduler skipped: no backup time configured."
         )
         return
 
-    frappe.log_error(
-        title="Backup Utility - Scheduler Triggered",
-        message=(
-            f"Site: {frappe.local.site}\n"
-            f"Configured Time: {doc.when}\n"
-            f"Queueing execute_backup on long queue."
-        ),
+    logger.info(
+        f"Backup Utility - Scheduler triggered for site {frappe.local.site} "
+        f"(configured time: {doc.when}). Queueing execute_backup on long queue."
     )
 
     job = frappe.enqueue(
@@ -47,13 +45,9 @@ def ftp_backup_cron():
         at_front=True,
     )
 
-    frappe.log_error(
-        title="Backup Utility - Backup Queued",
-        message=(
-            f"Site: {frappe.local.site}\n"
-            f"Job ID: {job.id if job else 'UNKNOWN'}\n"
-            f"Queue: long"
-        ),
+    logger.info(
+        f"Backup Utility - Backup queued for site {frappe.local.site} "
+        f"(job id: {job.id if job else 'UNKNOWN'})."
     )
 
 
@@ -67,6 +61,51 @@ def get_backup_directory():
     os.makedirs(backup_directory, exist_ok=True)
 
     return os.path.abspath(backup_directory)
+
+
+# Concurrency Lock
+#
+# Prevents overlapping runs (e.g. a manual trigger while the scheduled
+# job is still running) from racing on the before/after file diff,
+# double-uploading files, or corrupting cleanup accounting.
+
+BACKUP_LOCK_FILENAME = ".backup_utility.lock"
+BACKUP_LOCK_STALE_SECONDS = 2 * 60 * 60  # well beyond the 3600s backup timeout
+
+
+def get_backup_lock_path(backup_directory):
+    return Path(backup_directory) / BACKUP_LOCK_FILENAME
+
+
+def acquire_backup_lock(backup_directory):
+
+    lock_path = get_backup_lock_path(backup_directory)
+
+    if lock_path.exists():
+
+        age = time.time() - lock_path.stat().st_mtime
+
+        if age > BACKUP_LOCK_STALE_SECONDS:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            return False
+
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+
+
+def release_backup_lock(backup_directory):
+    try:
+        get_backup_lock_path(backup_directory).unlink()
+    except FileNotFoundError:
+        pass
 
 
 # Backup Files
@@ -95,6 +134,53 @@ def get_backup_files(backup_directory):
             and file_path.name.endswith(allowed_suffixes)
         )
     }
+
+
+# Upload Markers
+#
+# A backup file that fails to upload is retained locally and marked as
+# "pending" so size-based cleanup never deletes the only copy of a
+# backup that never made it off-site.
+
+UPLOAD_PENDING_SUFFIX = ".upload_pending"
+
+
+def get_upload_marker_path(backup_file):
+    return backup_file.parent / f"{backup_file.name}{UPLOAD_PENDING_SUFFIX}"
+
+
+def mark_upload_pending(backup_file):
+    try:
+        get_upload_marker_path(backup_file).touch(exist_ok=True)
+    except Exception:
+        pass
+
+
+def clear_upload_marker(backup_file):
+    try:
+        get_upload_marker_path(backup_file).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def prune_orphan_upload_markers(backup_directory):
+
+    backup_directory = Path(backup_directory)
+
+    if not backup_directory.exists():
+        return
+
+    for marker in backup_directory.glob(f"*{UPLOAD_PENDING_SUFFIX}"):
+
+        target = marker.with_name(
+            marker.name[: -len(UPLOAD_PENDING_SUFFIX)]
+        )
+
+        if not target.exists():
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass
 
 
 # Local Backup Cleanup
@@ -126,17 +212,15 @@ def cleanup_old_backups(
 
     max_size_bytes = max_size_mb * 1024 * 1024
 
-    files = list(
-        get_backup_files(backup_directory)
-    )
+    prune_orphan_upload_markers(backup_directory)
 
-    files.sort(
-        key=lambda path: path.stat().st_mtime
+    all_files = list(
+        get_backup_files(backup_directory)
     )
 
     total_size = sum(
         path.stat().st_size
-        for path in files
+        for path in all_files
         if path.exists()
     )
 
@@ -147,14 +231,26 @@ def cleanup_old_backups(
         f"Maximum allowed: {max_size_mb:.2f} MB."
     )
 
-    while total_size > max_size_bytes and files:
+    # Files still awaiting a successful upload are never deletable,
+    # even if they are the oldest files on disk.
+    deletable_files = [
+        path for path in all_files
+        if not get_upload_marker_path(path).exists()
+    ]
 
-        oldest = files.pop(0)
+    deletable_files.sort(
+        key=lambda path: path.stat().st_mtime
+    )
+
+    while total_size > max_size_bytes and deletable_files:
+
+        oldest = deletable_files.pop(0)
 
         try:
 
             file_size = oldest.stat().st_size
             oldest.unlink()
+            clear_upload_marker(oldest)
             total_size -= file_size
 
             append_process_log(
@@ -178,6 +274,14 @@ def cleanup_old_backups(
                 frappe.get_traceback(),
                 "Backup Utility - Cleanup Failed"
             )
+
+    if total_size > max_size_bytes:
+        append_process_log(
+            log,
+            "Local backup size still exceeds the configured maximum, "
+            "but the remaining files are pending FTP upload and were "
+            "not deleted."
+        )
 
     append_process_log(
         log,
@@ -326,19 +430,26 @@ def upload_backups_to_ftp(
     password = doc.get_password("password")
     path = doc.path or "/"
 
+    missing = []
+
     if not host:
-        raise frappe.ValidationError(
-            _("FTP Host is required.")
-        )
+        missing.append(_("FTP Host"))
 
     if not username:
-        raise frappe.ValidationError(
-            _("FTP Username is required.")
-        )
+        missing.append(_("FTP Username"))
 
     if not password:
+        missing.append(_("FTP Password"))
+
+    if missing:
+
+        # These files were created but can't be uploaded due to missing
+        # config - keep them protected from size-based cleanup.
+        for backup_file in backup_files:
+            mark_upload_pending(backup_file)
+
         raise frappe.ValidationError(
-            _("FTP Password is required.")
+            _("{0} required for FTP upload.").format(", ".join(missing))
         )
 
     append_process_log(
@@ -362,6 +473,8 @@ def upload_backups_to_ftp(
         )
 
         if success:
+
+            clear_upload_marker(backup_file)
 
             if cint(doc.delete_local):
 
@@ -389,6 +502,7 @@ def upload_backups_to_ftp(
         else:
 
             all_success = False
+            mark_upload_pending(backup_file)
 
             append_process_log(
                 log,
@@ -410,21 +524,30 @@ def run_backup():
 
     backup_directory = get_backup_directory()
 
-    # Create exactly ONE Backup Log
-
-    log = create_backup_log(doc)
-
-    doc.db_set(
-        "backup_log",
-        log.name
-    )
-
-    append_process_log(
-        log,
-        "Backup process started."
-    )
+    if not acquire_backup_lock(backup_directory):
+        logger.info(
+            f"Backup Utility - Skipped for site {frappe.local.site}: "
+            f"a backup is already in progress."
+        )
+        frappe.throw(
+            _("A backup is already in progress. Please wait for it to finish.")
+        )
 
     try:
+
+        # Create exactly ONE Backup Log
+
+        log = create_backup_log(doc)
+
+        doc.db_set(
+            "backup_log",
+            log.name
+        )
+
+        append_process_log(
+            log,
+            "Backup process started."
+        )
 
         # Capture files existing BEFORE this backup
         before_files = get_backup_files(
@@ -458,15 +581,48 @@ def run_backup():
 
         # Execute backup
 
-        result = subprocess.run(
-            command,
-            cwd=frappe.utils.get_bench_path(),
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
+        try:
 
-        # Backup failed
+            result = subprocess.run(
+                command,
+                cwd=frappe.utils.get_bench_path(),
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+
+        except Exception as exc:
+
+            log.backup_status = "Failed"
+            log.backup_error = str(exc)
+            log.backup_at = now_datetime()
+
+            append_process_log(
+                log,
+                f"Backup process failed: {exc}"
+            )
+
+            log.save(ignore_permissions=True)
+
+            frappe.db.set_single_value(
+                "Backup Utility", "last_backup_status", "Failed"
+            )
+            frappe.db.set_single_value(
+                "Backup Utility", "last_backup_error", str(exc)
+            )
+            frappe.db.set_single_value(
+                "Backup Utility", "last_backup_at", now_datetime()
+            )
+
+            frappe.log_error(
+                frappe.get_traceback(),
+                "Backup Utility - Backup Failed"
+            )
+
+            frappe.db.commit()
+            raise
+
+        # Backup command failed (non-zero exit)
 
         if result.returncode != 0:
 
@@ -504,46 +660,89 @@ def run_backup():
                 f"Backup failed: {error_message}"
             )
 
+            frappe.db.commit()
+
             return
 
-        # Find ONLY files created by this backup
+        # Find ONLY files created by this backup, and record them.
+        # Anything that goes wrong here still leaves the log in its
+        # default "Failed" state - it must NOT be able to overwrite a
+        # "Success" that hasn't been recorded yet.
 
-        after_files = get_backup_files(
-            backup_directory
-        )
+        try:
 
-        backup_files = sorted(
-            after_files - before_files,
-            key=lambda path: path.stat().st_mtime
-        )
+            after_files = get_backup_files(
+                backup_directory
+            )
 
-        append_process_log(
-            log,
-            f"Backup created successfully."
-        )
-
-        append_process_log(
-            log,
-            f"New backup files created: "
-            f"{len(backup_files)}"
-        )
-
-        for backup_file in backup_files:
-
-            size_mb = (
-                backup_file.stat().st_size
-                / (1024 * 1024)
+            backup_files = sorted(
+                after_files - before_files,
+                key=lambda path: path.stat().st_mtime
             )
 
             append_process_log(
                 log,
-                f"Created: {backup_file.name} "
-                f"({size_mb:.2f} MB)"
+                f"Backup created successfully."
             )
 
-        # Update Backup Utility
+            append_process_log(
+                log,
+                f"New backup files created: "
+                f"{len(backup_files)}"
+            )
+
+            for backup_file in backup_files:
+
+                size_mb = (
+                    backup_file.stat().st_size
+                    / (1024 * 1024)
+                )
+
+                append_process_log(
+                    log,
+                    f"Created: {backup_file.name} "
+                    f"({size_mb:.2f} MB)"
+                )
+
+        except Exception as exc:
+
+            log.backup_error = str(exc)
+            log.backup_at = now_datetime()
+
+            append_process_log(
+                log,
+                f"Backup process failed while collecting backup files: {exc}"
+            )
+
+            log.save(ignore_permissions=True)
+
+            frappe.db.set_single_value(
+                "Backup Utility", "last_backup_status", "Failed"
+            )
+            frappe.db.set_single_value(
+                "Backup Utility", "last_backup_error", str(exc)
+            )
+            frappe.db.set_single_value(
+                "Backup Utility", "last_backup_at", now_datetime()
+            )
+
+            frappe.log_error(
+                frappe.get_traceback(),
+                "Backup Utility - Backup Failed"
+            )
+
+            frappe.db.commit()
+            raise
+
+        # The backup itself succeeded - persist this NOW. Everything
+        # below (upload, cleanup) is isolated so a failure there can
+        # never flip this back to "Failed".
 
         backup_now = now_datetime()
+
+        log.backup_status = "Success"
+        log.backup_error = ""
+        log.backup_at = backup_now
 
         frappe.db.set_single_value(
             "Backup Utility",
@@ -563,10 +762,10 @@ def run_backup():
             ""
         )
 
-        log.backup_status = "Success"
-        log.backup_at = backup_now
+        log.save(ignore_permissions=True)
+        frappe.db.commit()
 
-        # FTP
+        # FTP - isolated from backup_status.
 
         if cint(doc.upload):
 
@@ -577,11 +776,22 @@ def run_backup():
                 "FTP upload enabled."
             )
 
-            upload_success = upload_backups_to_ftp(
-                doc,
-                backup_files,
-                log,
-            )
+            try:
+                upload_success = upload_backups_to_ftp(
+                    doc,
+                    backup_files,
+                    log,
+                )
+            except Exception as exc:
+                upload_success = False
+                append_process_log(
+                    log,
+                    f"FTP upload failed: {exc}"
+                )
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "Backup Utility - FTPS Upload Failed"
+                )
 
             if upload_success:
 
@@ -653,13 +863,23 @@ def run_backup():
                 "FTP upload disabled."
             )
 
-        # Local backup size cleanup
+        # Local backup size cleanup - isolated from backup_status.
 
-        cleanup_old_backups(
-            backup_directory,
-            doc.maximum_backup_size_mb,
-            log,
-        )
+        try:
+            cleanup_old_backups(
+                backup_directory,
+                doc.maximum_backup_size_mb,
+                log,
+            )
+        except Exception:
+            append_process_log(
+                log,
+                "Local backup cleanup failed unexpectedly."
+            )
+            frappe.log_error(
+                frappe.get_traceback(),
+                "Backup Utility - Cleanup Failed"
+            )
 
         # Finalize
 
@@ -674,46 +894,8 @@ def run_backup():
 
         frappe.db.commit()
 
-    except Exception as exc:
-
-        log.backup_status = "Failed"
-        log.backup_error = str(exc)
-
-        append_process_log(
-            log,
-            f"Backup process failed: {exc}"
-        )
-
-        log.save(
-            ignore_permissions=True
-        )
-
-        frappe.db.set_single_value(
-            "Backup Utility",
-            "last_backup_status",
-            "Failed"
-        )
-
-        frappe.db.set_single_value(
-            "Backup Utility",
-            "last_backup_error",
-            str(exc)
-        )
-
-        frappe.db.set_single_value(
-            "Backup Utility",
-            "last_backup_at",
-            now_datetime()
-        )
-
-        frappe.log_error(
-            frappe.get_traceback(),
-            "Backup Utility - Backup Failed"
-        )
-
-        frappe.db.commit()
-
-        raise
+    finally:
+        release_backup_lock(backup_directory)
 
 
 # Manual Trigger
@@ -721,24 +903,26 @@ def run_backup():
 @frappe.whitelist()
 def execute_backup():
 
-    frappe.log_error(
-        title="Backup Utility - Execute Started",
-        message=(
-            f"Site: {frappe.local.site}\n"
-            f"User: {frappe.session.user}"
-        ),
+    frappe.only_for("System Manager")
+
+    doc = get_backup_utility()
+
+    if not cint(doc.enabled):
+        frappe.throw(
+            _("Backup Utility is disabled. Enable it before running a backup.")
+        )
+
+    logger.info(
+        f"Backup Utility - Execute started for site {frappe.local.site} "
+        f"by user {frappe.session.user}."
     )
 
     try:
 
-        result = run_backup()
+        run_backup()
 
-        frappe.log_error(
-            title="Backup Utility - Execute Finished",
-            message=(
-                f"Site: {frappe.local.site}\n"
-                f"Result: {result}"
-            ),
+        logger.info(
+            f"Backup Utility - Execute finished for site {frappe.local.site}."
         )
 
         return {
@@ -802,4 +986,3 @@ def create_backup_log(doc):
     frappe.db.commit()
 
     return log
-
