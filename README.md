@@ -33,20 +33,20 @@ Saving the **Backup Utility** doc (`on_update`) creates or updates a `Scheduled 
 
 ### Backup process (`run_backup`)
 
-1. Snapshots existing files in the site's `private/backups` directory, then runs:
+1. Acquires an exclusive lock (a lock file in the backup directory) so overlapping runs — e.g. a manual trigger firing while the scheduled job is still running — can't race each other. If a backup is already in progress, the run is rejected with a clear error instead of running concurrently.
+2. Snapshots existing files in the site's `private/backups` directory, then runs:
    ```bash
    bench --site <site> backup [--with-files] --backup-path <private/backups>
    ```
-2. Diffs the directory to find only the files this run created (`.json`, `.sql`, `.sql.gz`, `.tar`, `.tar.gz`, `.tgz`).
-3. Updates the `Backup Log` and the `Backup Utility` singleton with the result.
-4. If **Upload?** is enabled, connects to the configured host over `ftplib.FTP_TLS`, authenticates, switches to secure data protection (`PROT P`), changes/creates the remote path, and uploads each new file. On success (and if **Delete Local Backup after Upload** is set), the local file is removed.
-5. If a **Maximum Backup Size** is configured, deletes the oldest local backup files until total size is back under the limit.
+3. Diffs the directory to find only the files this run created (`.json`, `.sql`, `.sql.gz`, `.tar`, `.tar.gz`, `.tgz`), and immediately records the backup as **Success** — a later failure in upload or cleanup can never retroactively flip this back to **Failed**.
+4. If **Upload?** is enabled, connects to the configured host over `ftplib.FTP_TLS`, authenticates, switches to secure data protection (`PROT P`), changes/creates the remote path, and uploads each new file. On success (and if **Delete Local Backup after Upload** is set), the local file is removed. A file that fails to upload is retained locally and marked as pending.
+5. If a **Maximum Backup Size** is configured, deletes the oldest local backup files until total size is back under the limit — files still marked pending upload are never deleted, so a failed/missed upload can't leave a backup with no copy anywhere.
 
-Every step is appended to the `Backup Log`'s `Process Log`, and key events are also written to Frappe's error log for visibility in the Frappe Cloud / bench log viewer.
+Every step is appended to the `Backup Log`'s `Process Log`; routine progress is also written to the `backup_utility` bench logger, and genuine failures are recorded in Frappe's Error Log.
 
 ### Manual trigger
 
-`backup_utility.api.backup.execute_backup` is a whitelisted method that runs the same backup process synchronously and returns `{"success": true}` — call it from the client, a server script, or `bench execute` to trigger a backup on demand.
+`backup_utility.api.backup.execute_backup` is a whitelisted method restricted to the **System Manager** role. It runs the same backup process synchronously and returns `{"success": true}` — call it from the client, a server script, or `bench execute` to trigger a backup on demand. It raises an error (rather than silently doing nothing) if Backup Utility is disabled or a backup is already running.
 
 ## Installation
 
