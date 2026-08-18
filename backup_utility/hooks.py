@@ -256,11 +256,7 @@ app_license = "mit"
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
-
-# scheduler_events = {
-#     "cron": {
-#         "* * * * *": [
-#             "backup_utility.api.backup.enqueue_scheduled_backup"
-#         ]
-#     }
-# }
+# Note: the backup schedule is NOT registered here. It is managed dynamically
+# as a "Scheduled Job Type" document, created/updated whenever the
+# "Backup Utility" settings doc is saved (see
+# backup_utility.backup_utility.doctype.backup_utility.backup_utility.update_backup_schedule).
