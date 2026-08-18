@@ -9,7 +9,7 @@ from datetime import datetime
 from frappe import _
 from frappe.utils import cint, now_datetime, get_time, flt
 
-def enqueue_scheduled_backup():
+def ftp_backup_cron():
 
     doc = get_backup_utility()
 
@@ -40,7 +40,10 @@ def enqueue_scheduled_backup():
         "backup_utility.api.backup.execute_backup",
         queue="long",
         timeout=3600,
-        job_name=f"backup_utility_scheduled_backup:{frappe.local.site}",
+        job_name=(
+            f"backup_utility_scheduled_backup:"
+            f"{frappe.local.site}"
+        ),
         at_front=True,
     )
 
@@ -223,26 +226,28 @@ def upload_file_to_ftp(
 
         append_process_log(
             log,
-            f"Connecting to FTP server: "
+            f"Connecting securely to FTPS server: "
             f"{host}:{port}"
         )
 
-        ftp = ftplib.FTP()
+        ftp = ftplib.FTP_TLS()
 
         ftp.connect(
             host=host,
             port=cint(port or 21),
             timeout=60,
         )
+        ftp.auth()
 
         ftp.login(
             user=username,
             passwd=password,
         )
+        ftp.prot_p()
 
         append_process_log(
             log,
-            "FTP authentication successful."
+            "FTPS authentication successful."
         )
 
         ftp_change_directory(
@@ -252,7 +257,7 @@ def upload_file_to_ftp(
 
         append_process_log(
             log,
-            f"Uploading: {local_file.name}"
+            f"Uploading securely: {local_file.name}"
         )
 
         with open(local_file, "rb") as file_handle:
@@ -265,7 +270,8 @@ def upload_file_to_ftp(
 
         append_process_log(
             log,
-            f"Upload completed: {local_file.name}"
+            f"Secure FTPS upload completed: "
+            f"{local_file.name}"
         )
 
         return True
@@ -274,13 +280,13 @@ def upload_file_to_ftp(
 
         append_process_log(
             log,
-            f"FTP upload failed for "
+            f"FTPS upload failed for "
             f"{local_file.name}: {exc}"
         )
 
         frappe.log_error(
             frappe.get_traceback(),
-            f"Backup Utility - FTP Upload Failed - "
+            f"Backup Utility - FTPS Upload Failed - "
             f"{local_file.name}"
         )
 
@@ -293,9 +299,10 @@ def upload_file_to_ftp(
             try:
                 ftp.quit()
             except Exception:
-                pass
-
-
+                try:
+                    ftp.close()
+                except Exception:
+                    pass
 
 
 def upload_backups_to_ftp(

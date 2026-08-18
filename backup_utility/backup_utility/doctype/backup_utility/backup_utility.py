@@ -5,19 +5,15 @@ from frappe.utils import cint
 
 
 BACKUP_SCHEDULE_METHOD = (
-    "backup_utility.api.backup.enqueue_scheduled_backup"
+    "backup_utility.api.backup.ftp_backup_cron"
 )
-
 
 class BackupUtility(Document):
 
     def validate(self):
         if self.enabled and not self.when:
-            frappe.throw("Please configure the backup time.")
+            frappe.throw("Please enable and configure the backup time.")
 
-    def on_save(self):
-        update_backup_schedule(self)
-        
     def on_update(self):
         update_backup_schedule(self)
 
@@ -35,11 +31,14 @@ def update_backup_schedule(doc):
     if not doc.enabled or not doc.when:
 
         if job_name:
-            frappe.delete_doc(
+            frappe.db.set_value(
                 "Scheduled Job Type",
                 job_name,
-                ignore_permissions=True,
+                "stopped",
+                1,
             )
+
+            frappe.db.commit()
 
         return
 
