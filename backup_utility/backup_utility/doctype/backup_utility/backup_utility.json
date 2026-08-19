@@ -17,6 +17,7 @@
   "host",
   "port",
   "test_connection",
+  "connection_tested",
   "column_break_aqjl",
   "delete_local",
   "username",
@@ -172,13 +173,21 @@
    "fieldname": "test_connection",
    "fieldtype": "Button",
    "label": "Test Connection"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "connection_tested",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Connection Tested?"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-08-19 12:17:47.816047",
+ "modified": "2026-08-19 13:23:05.594503",
  "modified_by": "Administrator",
  "module": "Backup Utility",
  "name": "Backup Utility",

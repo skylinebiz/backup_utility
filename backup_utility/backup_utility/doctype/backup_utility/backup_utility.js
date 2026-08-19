@@ -1,15 +1,20 @@
-// Copyright (c) 2026, Harshit Jain and contributors
-// For license information, please see license.txt
-
 frappe.ui.form.on("Backup Utility", {
     refresh(frm) {
         frm.trigger("setup_test_connection");
+        frm.trigger("setup_save_state");
+        update_connection_message(frm);
     },
 
     setup_test_connection(frm) {
-        frm.fields_dict.test_connection.$input.off("click");
+        const button = frm.fields_dict.test_connection;
 
-        frm.fields_dict.test_connection.$input.on("click", function () {
+        if (!button) {
+            return;
+        }
+
+        button.$input.off("click");
+
+        button.$input.on("click", function () {
 
             const required_fields = [
                 {
@@ -37,9 +42,11 @@ frappe.ui.form.on("Backup Utility", {
             const missing_fields = required_fields.filter(field => {
                 const value = frm.doc[field.fieldname];
 
-                return value === undefined ||
+                return (
+                    value === undefined ||
                     value === null ||
-                    String(value).trim() === "";
+                    String(value).trim() === ""
+                );
             });
 
             if (missing_fields.length) {
@@ -57,7 +64,6 @@ frappe.ui.form.on("Backup Utility", {
                     indicator: "red"
                 });
 
-                // Focus first missing field
                 frm.scroll_to_field(
                     missing_fields[0].fieldname
                 );
@@ -75,14 +81,100 @@ frappe.ui.form.on("Backup Utility", {
 
                     if (r.message && r.message.success) {
 
+                        frm.set_value(
+                            "connection_tested",
+                            1
+                        );
+
+                        frm.enable_save();
+                        update_connection_message(frm);
+
                         frappe.show_alert({
                             message: r.message.message,
                             indicator: "green"
                         });
-
                     }
                 }
             });
         });
+    },
+
+    setup_save_state(frm) {
+        if (!frm.doc.upload) {
+            frm.enable_save();
+            return;
+        }
+
+        if (frm.doc.connection_tested) {
+            frm.enable_save();
+        } else {
+            frm.disable_save();
+        }
+    },
+
+    upload(frm) {
+
+        if (frm.doc.upload) {
+            frm.set_value("connection_tested", 0);
+            frm.disable_save();
+        } else {
+            frm.set_value("connection_tested", 0);
+            frm.enable_save();
+        }
+        update_connection_message(frm);
+    },
+
+    host(frm) {
+        frm.trigger("ftp_config_changed");
+    },
+
+    port(frm) {
+        frm.trigger("ftp_config_changed");
+    },
+
+    username(frm) {
+        frm.trigger("ftp_config_changed");
+    },
+
+    password(frm) {
+        frm.trigger("ftp_config_changed");
+    },
+
+    path(frm) {
+        frm.trigger("ftp_config_changed");
+    },
+
+    ftp_config_changed(frm) {
+        if (!frm.doc.upload) {
+            return;
+        }
+
+        // Configuration changed, previous test is no longer valid
+        if (frm.doc.connection_tested) {
+            frm.set_value(
+                "connection_tested",
+                0
+            );
+        }
+
+        frm.disable_save();
+        update_connection_message(frm);
     }
 });
+
+
+function update_connection_message(frm) {
+    frm.dashboard.clear_headline();
+    if (!frm.doc.upload) {
+        return;
+    }
+
+    if (frm.doc.connection_tested) {
+        return;
+    }
+
+    frm.dashboard.set_headline_alert(
+        __("FTP connection needs to be tested before saving."),
+        "orange"
+    );
+}
