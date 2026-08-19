@@ -2,6 +2,7 @@ import frappe
 
 from frappe.model.document import Document
 from frappe.utils import cint
+from frappe import _
 
 
 BACKUP_SCHEDULE_METHOD = (
@@ -13,6 +14,13 @@ class BackupUtility(Document):
     def validate(self):
         if self.enabled and not self.when:
             frappe.throw("Please enable and configure the backup time.")
+
+        if self.upload and not self.connection_tested:
+            frappe.throw(
+                _(
+                    "Please test the FTP connection successfully "
+                    "before saving the Backup Utility."
+                ))
 
     def on_update(self):
         update_backup_schedule(self)
