@@ -16,6 +16,7 @@
   "upload",
   "host",
   "port",
+  "test_connection",
   "column_break_aqjl",
   "delete_local",
   "username",
@@ -164,13 +165,20 @@
   {
    "fieldname": "column_break_heyy",
    "fieldtype": "Column Break"
+  },
+  {
+   "button_color": "Info",
+   "depends_on": "eval:doc.upload == 1",
+   "fieldname": "test_connection",
+   "fieldtype": "Button",
+   "label": "Test Connection"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-08-13 15:49:47.475485",
+ "modified": "2026-08-19 12:17:47.816047",
  "modified_by": "Administrator",
  "module": "Backup Utility",
  "name": "Backup Utility",

@@ -6,11 +6,13 @@ import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
-
+import io
 from frappe import _
 from frappe.utils import cint, now_datetime, get_time, flt
+import logging
 
 logger = frappe.logger("backup_utility")
+logger.setLevel(logging.INFO)
 
 
 def ftp_backup_cron():
@@ -986,3 +988,149 @@ def create_backup_log(doc):
     frappe.db.commit()
 
     return log
+
+
+
+@frappe.whitelist()
+def test_connection():
+
+    frappe.only_for("System Manager")
+
+    doc = get_backup_utility()
+
+    host = doc.host
+    port = cint(doc.port or 21)
+    username = doc.username
+    password = doc.get_password("password")
+    path = doc.path or "/"
+
+    # Validate configuration
+    missing = []
+
+    if not host:
+        missing.append(_("FTP Host"))
+
+    if not username:
+        missing.append(_("FTP Username"))
+
+    if not password:
+        missing.append(_("FTP Password"))
+
+    if not port:
+        missing.append(_("FTP Port"))
+
+
+    if missing:
+        frappe.throw(
+            _("{0} required.").format(", ".join(missing))
+        )
+
+    ftp = None
+    test_filename = (
+        f"backup_utility_connection_test_"
+        f"{frappe.utils.now_datetime().strftime('%Y%m%d%H%M%S%f')}.txt"
+    )
+
+    try:
+
+        # Connect
+        logger.info(
+            f"Backup Utility - Testing FTPS connection "
+            f"to {host}:{port}."
+        )
+
+        ftp = ftplib.FTP_TLS()
+
+        ftp.connect(
+            host=host,
+            port=port,
+            timeout=60,
+        )
+
+        ftp.auth()
+
+        # Login
+        ftp.login(
+            user=username,
+            passwd=password,
+        )
+
+        # Encrypt data connection
+        ftp.prot_p()
+
+        # Check remote directory
+        ftp_change_directory(
+            ftp,
+            path
+        )
+
+        # Test Write permission
+        test_content = (
+            "Backup Utility FTP connection test.\n"
+            "This file will be deleted automatically."
+        )
+
+        test_file = io.BytesIO(
+            test_content.encode("utf-8")
+        )
+
+        ftp.storbinary(
+            f"STOR {test_filename}",
+            test_file,
+        )
+
+        logger.info(
+            f"Backup Utility - FTP test file uploaded: "
+            f"{test_filename}"
+        )
+
+        # Verify file exists
+        try:
+            ftp.size(test_filename)
+        except Exception:
+            filenames = ftp.nlst()
+
+            if test_filename not in filenames:
+                raise Exception(
+                    "Test file was uploaded but could not be verified."
+                )
+
+        # Delete test file
+        ftp.delete(test_filename)
+
+        logger.info(
+            f"Backup Utility - FTP test file deleted: "
+            f"{test_filename}"
+        )
+
+        return {
+            "success": True,
+            "message": _(
+                "FTPS connection successful. "
+                "Authentication, write permission verified."
+            ),
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "Backup Utility - FTPS connection test failed."
+        )
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Backup Utility - FTPS Connection Test Failed",
+        )
+        frappe.throw(
+            _(
+                "FTPS connection test failed: {0}"
+            ).format(str(exc))
+        )
+
+    finally:
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                try:
+                    ftp.close()
+                except Exception:
+                    pass
