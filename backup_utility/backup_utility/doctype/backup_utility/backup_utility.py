@@ -39,29 +39,24 @@ def restore_backup_schedule():
 
 def update_backup_schedule(doc):
 
+    # The job record always exists (even when disabled / never
+    # configured) so a manual trigger - which runs through this same
+    # Scheduled Job Type, see backup_utility.api.backup.trigger_manual_backup -
+    # is available from the very first save onward. "stopped" is what
+    # actually gates the *automatic* daily firing.
+    should_run = bool(doc.enabled and doc.when)
+
+    # A placeholder cron is needed while stopped, since Scheduled Job
+    # Type requires a valid cron_format for frequency "Cron" regardless
+    # of "stopped" - it is never evaluated while stopped=1.
+    cron = get_backup_cron(doc) or "0 0 * * *"
+
     job_name = frappe.db.exists(
         "Scheduled Job Type",
         {
             "method": BACKUP_SCHEDULE_METHOD,
         },
     )
-
-    # Backup disabled or no time configured
-    if not doc.enabled or not doc.when:
-
-        if job_name:
-            frappe.db.set_value(
-                "Scheduled Job Type",
-                job_name,
-                "stopped",
-                1,
-            )
-
-            frappe.db.commit()
-
-        return
-
-    cron = get_backup_cron(doc)
 
     if job_name:
 
@@ -80,8 +75,12 @@ def update_backup_schedule(doc):
             job.cron_format = cron
             changed = True
 
-        if job.stopped:
-            job.stopped = 0
+        if bool(job.stopped) != (not should_run):
+            job.stopped = 0 if should_run else 1
+            changed = True
+
+        if not job.create_log:
+            job.create_log = 1
             changed = True
 
         if changed:
@@ -94,7 +93,8 @@ def update_backup_schedule(doc):
         job.method = BACKUP_SCHEDULE_METHOD
         job.frequency = "Cron"
         job.cron_format = cron
-        job.stopped = 0
+        job.stopped = 0 if should_run else 1
+        job.create_log = 1
 
         job.insert(ignore_permissions=True)
 

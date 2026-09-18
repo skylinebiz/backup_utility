@@ -14,8 +14,12 @@
   "backup_log",
   "upload_config_section",
   "upload",
+  "upload_type",
   "host",
   "port",
+  "s3_bucket",
+  "s3_endpoint_url",
+  "s3_region",
   "test_connection",
   "connection_tested",
   "column_break_aqjl",
@@ -23,6 +27,9 @@
   "username",
   "password",
   "path",
+  "s3_access_key_id",
+  "s3_secret_access_key",
+  "s3_path",
   "backup_status_section",
   "last_backup_at",
   "last_backup_status",
@@ -81,39 +88,87 @@
    "label": "Upload?"
   },
   {
+   "default": "FTPS",
    "depends_on": "eval:doc.upload == 1",
+   "fieldname": "upload_type",
+   "fieldtype": "Select",
+   "label": "Configuration Type",
+   "options": "FTPS\nS3-compatible Object Storage",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.upload == 1 && (doc.upload_type == 'FTPS' || !doc.upload_type)",
    "fieldname": "host",
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Host"
   },
   {
-   "depends_on": "eval:doc.upload == 1",
+   "depends_on": "eval:doc.upload == 1 && (doc.upload_type == 'FTPS' || !doc.upload_type)",
    "fieldname": "port",
    "fieldtype": "Int",
    "label": "Port"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1 && doc.upload_type == 'S3-compatible Object Storage'",
+   "fieldname": "s3_bucket",
+   "fieldtype": "Data",
+   "label": "Bucket"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1 && doc.upload_type == 'S3-compatible Object Storage'",
+   "description": "Leave blank to use Amazon S3's default endpoint. For Cloudflare R2: https://<account_id>.r2.cloudflarestorage.com. For Backblaze B2: https://s3.<region>.backblazeb2.com",
+   "fieldname": "s3_endpoint_url",
+   "fieldtype": "Data",
+   "label": "Endpoint URL"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1 && doc.upload_type == 'S3-compatible Object Storage'",
+   "description": "e.g. us-east-1 for Amazon S3, auto for Cloudflare R2, or your Backblaze B2 region code (e.g. us-west-002).",
+   "fieldname": "s3_region",
+   "fieldtype": "Data",
+   "label": "Region"
   },
   {
    "fieldname": "column_break_aqjl",
    "fieldtype": "Column Break"
   },
   {
-   "depends_on": "eval:doc.upload == 1",
+   "depends_on": "eval:doc.upload == 1 && (doc.upload_type == 'FTPS' || !doc.upload_type)",
    "fieldname": "username",
    "fieldtype": "Data",
    "label": "Username"
   },
   {
-   "depends_on": "eval:doc.upload == 1",
+   "depends_on": "eval:doc.upload == 1 && (doc.upload_type == 'FTPS' || !doc.upload_type)",
    "fieldname": "password",
    "fieldtype": "Password",
    "label": "Password"
   },
   {
-   "depends_on": "eval:doc.upload == 1",
+   "depends_on": "eval:doc.upload == 1 && (doc.upload_type == 'FTPS' || !doc.upload_type)",
    "fieldname": "path",
    "fieldtype": "Data",
    "label": "Path"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1 && doc.upload_type == 'S3-compatible Object Storage'",
+   "fieldname": "s3_access_key_id",
+   "fieldtype": "Data",
+   "label": "Access Key ID"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1 && doc.upload_type == 'S3-compatible Object Storage'",
+   "fieldname": "s3_secret_access_key",
+   "fieldtype": "Password",
+   "label": "Secret Access Key"
+  },
+  {
+   "depends_on": "eval:doc.upload == 1 && doc.upload_type == 'S3-compatible Object Storage'",
+   "description": "Optional prefix/folder inside the bucket where backups will be stored.",
+   "fieldname": "s3_path",
+   "fieldtype": "Data",
+   "label": "Path / Prefix"
   },
   {
    "default": "0",

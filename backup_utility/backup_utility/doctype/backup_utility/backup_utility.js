@@ -16,28 +16,31 @@ frappe.ui.form.on("Backup Utility", {
             __("Start Backup Now"),
             function () {
 
-                button.prop("disabled", true).text(__("Backup in Progress..."));
+                button.prop("disabled", true).text(__("Queuing..."));
 
                 frappe.call({
-                    method: "backup_utility.api.backup.execute_backup",
+                    method: "backup_utility.api.backup.trigger_manual_backup",
 
                     freeze: true,
-                    freeze_message: __("Running backup. This may take a while..."),
+                    freeze_message: __("Queuing backup via the scheduler..."),
 
                     callback: function (r) {
 
-                        if (r.message && r.message.success) {
+                        if (r.message && r.message.queued) {
                             frappe.show_alert({
-                                message: __("Backup completed. See Backup Log for details."),
+                                message: __(
+                                    "Backup queued via the scheduler. Check Backup Log for progress."
+                                ),
                                 indicator: "green"
                             });
                         }
                     },
 
                     always: function () {
-                        // Re-fetches the doc (updated status/log fields)
-                        // and re-runs refresh, which resets the button.
-                        frm.reload_doc();
+                        // Re-checks status - it may still show as not
+                        // running yet if the queue hasn't picked it up,
+                        // which is expected for a moment after queuing.
+                        frm.trigger("setup_start_backup_now");
                     }
                 });
             }
@@ -48,7 +51,11 @@ frappe.ui.form.on("Backup Utility", {
             .addClass("btn-primary")
             .attr(
                 "title",
-                __("Manually run a backup right now, independent of the scheduled time.")
+                __(
+                    "Runs the backup schedule right now, through the same " +
+                    "mechanism Frappe's scheduler uses - independent of the " +
+                    "configured time and of whether Enabled is checked."
+                )
             );
 
         frappe.call({
@@ -75,7 +82,20 @@ frappe.ui.form.on("Backup Utility", {
 
         button.$input.on("click", function () {
 
-            const required_fields = [
+            const required_fields = is_s3(frm) ? [
+                {
+                    fieldname: "s3_bucket",
+                    label: __("Bucket")
+                },
+                {
+                    fieldname: "s3_access_key_id",
+                    label: __("Access Key ID")
+                },
+                {
+                    fieldname: "s3_secret_access_key",
+                    label: __("Secret Access Key")
+                }
+            ] : [
                 {
                     fieldname: "host",
                     label: __("Host")
@@ -115,7 +135,7 @@ frappe.ui.form.on("Backup Utility", {
                     .join(", ");
 
                 frappe.msgprint({
-                    title: __("Missing FTP Settings"),
+                    title: __("Missing Upload Settings"),
                     message: __(
                         "Please enter the following fields before testing the connection:<br><br>{0}",
                         [missing_names]
@@ -135,17 +155,27 @@ frappe.ui.form.on("Backup Utility", {
 
                 // The doc may still be unsaved at this point (saving is
                 // blocked until the connection is tested), so send what's
-                // currently in the form instead of testing stale DB values.
+                // currently in the form instead of testing stale DB values -
+                // including which backend is selected, otherwise switching
+                // Configuration Type without saving first would test
+                // whichever one was last saved.
                 args: {
+                    upload_type: frm.doc.upload_type,
                     host: frm.doc.host,
                     port: frm.doc.port,
                     username: frm.doc.username,
                     password: frm.doc.password,
-                    path: frm.doc.path
+                    path: frm.doc.path,
+                    s3_bucket: frm.doc.s3_bucket,
+                    s3_endpoint_url: frm.doc.s3_endpoint_url,
+                    s3_region: frm.doc.s3_region,
+                    s3_access_key_id: frm.doc.s3_access_key_id,
+                    s3_secret_access_key: frm.doc.s3_secret_access_key,
+                    s3_path: frm.doc.s3_path
                 },
 
                 freeze: true,
-                freeze_message: __("Testing FTP connection..."),
+                freeze_message: __("Testing connection..."),
 
                 callback: function (r) {
 
@@ -194,27 +224,55 @@ frappe.ui.form.on("Backup Utility", {
         update_connection_message(frm);
     },
 
+    upload_type(frm) {
+        frm.trigger("upload_config_changed");
+    },
+
     host(frm) {
-        frm.trigger("ftp_config_changed");
+        frm.trigger("upload_config_changed");
     },
 
     port(frm) {
-        frm.trigger("ftp_config_changed");
+        frm.trigger("upload_config_changed");
     },
 
     username(frm) {
-        frm.trigger("ftp_config_changed");
+        frm.trigger("upload_config_changed");
     },
 
     password(frm) {
-        frm.trigger("ftp_config_changed");
+        frm.trigger("upload_config_changed");
     },
 
     path(frm) {
-        frm.trigger("ftp_config_changed");
+        frm.trigger("upload_config_changed");
     },
 
-    ftp_config_changed(frm) {
+    s3_bucket(frm) {
+        frm.trigger("upload_config_changed");
+    },
+
+    s3_endpoint_url(frm) {
+        frm.trigger("upload_config_changed");
+    },
+
+    s3_region(frm) {
+        frm.trigger("upload_config_changed");
+    },
+
+    s3_access_key_id(frm) {
+        frm.trigger("upload_config_changed");
+    },
+
+    s3_secret_access_key(frm) {
+        frm.trigger("upload_config_changed");
+    },
+
+    s3_path(frm) {
+        frm.trigger("upload_config_changed");
+    },
+
+    upload_config_changed(frm) {
         if (!frm.doc.upload) {
             return;
         }
@@ -233,6 +291,10 @@ frappe.ui.form.on("Backup Utility", {
 });
 
 
+function is_s3(frm) {
+    return frm.doc.upload_type === "S3-compatible Object Storage";
+}
+
 function update_connection_message(frm) {
     frm.dashboard.clear_headline();
     if (!frm.doc.upload) {
@@ -244,7 +306,7 @@ function update_connection_message(frm) {
     }
 
     frm.dashboard.set_headline_alert(
-        __("FTP connection needs to be tested before saving."),
+        __("Connection needs to be tested before saving."),
         "orange"
     );
 }
