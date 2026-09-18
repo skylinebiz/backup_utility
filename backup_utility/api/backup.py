@@ -6,11 +6,13 @@ import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
-
+import io
 from frappe import _
 from frappe.utils import cint, now_datetime, get_time, flt
+import logging
 
 logger = frappe.logger("backup_utility")
+logger.setLevel(logging.INFO)
 
 
 def ftp_backup_cron():
@@ -77,21 +79,31 @@ def get_backup_lock_path(backup_directory):
     return Path(backup_directory) / BACKUP_LOCK_FILENAME
 
 
+def is_backup_lock_active(backup_directory):
+
+    lock_path = get_backup_lock_path(backup_directory)
+
+    if not lock_path.exists():
+        return False
+
+    age = time.time() - lock_path.stat().st_mtime
+
+    return age <= BACKUP_LOCK_STALE_SECONDS
+
+
 def acquire_backup_lock(backup_directory):
 
     lock_path = get_backup_lock_path(backup_directory)
 
     if lock_path.exists():
 
-        age = time.time() - lock_path.stat().st_mtime
-
-        if age > BACKUP_LOCK_STALE_SECONDS:
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
-        else:
+        if is_backup_lock_active(backup_directory):
             return False
+
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
     try:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -106,6 +118,18 @@ def release_backup_lock(backup_directory):
         get_backup_lock_path(backup_directory).unlink()
     except FileNotFoundError:
         pass
+
+
+@frappe.whitelist()
+def get_backup_status():
+
+    frappe.only_for("System Manager")
+
+    return {
+        "running": is_backup_lock_active(
+            get_backup_directory()
+        )
+    }
 
 
 # Backup Files
@@ -519,8 +543,9 @@ def run_backup():
 
     doc = get_backup_utility()
 
-    if not cint(doc.enabled):
-        return
+    # "Enabled" only gates the automatic daily schedule (ftp_backup_cron
+    # checks it before enqueueing) - a manual trigger via execute_backup
+    # should work regardless of whether scheduling is turned on.
 
     backup_directory = get_backup_directory()
 
@@ -905,13 +930,6 @@ def execute_backup():
 
     frappe.only_for("System Manager")
 
-    doc = get_backup_utility()
-
-    if not cint(doc.enabled):
-        frappe.throw(
-            _("Backup Utility is disabled. Enable it before running a backup.")
-        )
-
     logger.info(
         f"Backup Utility - Execute started for site {frappe.local.site} "
         f"by user {frappe.session.user}."
@@ -986,3 +1004,159 @@ def create_backup_log(doc):
     frappe.db.commit()
 
     return log
+
+
+
+@frappe.whitelist()
+def test_connection(host=None, port=None, username=None, password=None, path=None):
+
+    frappe.only_for("System Manager")
+
+    doc = get_backup_utility()
+
+    # The form may hold unsaved edits (this is often called before the
+    # document can even be saved - see BackupUtility.validate). Prefer
+    # whatever the caller just typed and only fall back to the saved
+    # value when a field was left untouched.
+    host = host if host not in (None, "") else doc.host
+    port = cint(port) if port not in (None, "") else cint(doc.port or 21)
+    username = username if username not in (None, "") else doc.username
+    path = path if path not in (None, "") else (doc.path or "/")
+
+    # A Password field sends back a dummy value of asterisks - as many
+    # as the real password's length, NOT a fixed "*****" - when the user
+    # hasn't retyped it (see BaseDocument._save_passwords). That's not a
+    # real password.
+    if not password or set(password) == {"*"}:
+        password = doc.get_password("password")
+
+    # Validate configuration
+    missing = []
+
+    if not host:
+        missing.append(_("FTP Host"))
+
+    if not username:
+        missing.append(_("FTP Username"))
+
+    if not password:
+        missing.append(_("FTP Password"))
+
+    if not port:
+        missing.append(_("FTP Port"))
+
+
+    if missing:
+        frappe.throw(
+            _("{0} required.").format(", ".join(missing))
+        )
+
+    ftp = None
+    test_filename = (
+        f"backup_utility_connection_test_"
+        f"{frappe.utils.now_datetime().strftime('%Y%m%d%H%M%S%f')}.txt"
+    )
+
+    try:
+
+        # Connect
+        logger.info(
+            f"Backup Utility - Testing FTPS connection "
+            f"to {host}:{port}."
+        )
+
+        ftp = ftplib.FTP_TLS()
+
+        ftp.connect(
+            host=host,
+            port=port,
+            timeout=60,
+        )
+
+        ftp.auth()
+
+        # Login
+        ftp.login(
+            user=username,
+            passwd=password,
+        )
+
+        # Encrypt data connection
+        ftp.prot_p()
+
+        # Check remote directory
+        ftp_change_directory(
+            ftp,
+            path
+        )
+
+        # Test Write permission
+        test_content = (
+            "Backup Utility FTP connection test.\n"
+            "This file will be deleted automatically."
+        )
+
+        test_file = io.BytesIO(
+            test_content.encode("utf-8")
+        )
+
+        ftp.storbinary(
+            f"STOR {test_filename}",
+            test_file,
+        )
+
+        logger.info(
+            f"Backup Utility - FTP test file uploaded: "
+            f"{test_filename}"
+        )
+
+        # Verify file exists
+        try:
+            ftp.size(test_filename)
+        except Exception:
+            filenames = ftp.nlst()
+
+            if test_filename not in filenames:
+                raise Exception(
+                    "Test file was uploaded but could not be verified."
+                )
+
+        # Delete test file
+        ftp.delete(test_filename)
+
+        logger.info(
+            f"Backup Utility - FTP test file deleted: "
+            f"{test_filename}"
+        )
+
+        return {
+            "success": True,
+            "message": _(
+                "FTPS connection successful. "
+                "Authentication, write permission verified."
+            ),
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "Backup Utility - FTPS connection test failed."
+        )
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Backup Utility - FTPS Connection Test Failed",
+        )
+        frappe.throw(
+            _(
+                "FTPS connection test failed: {0}"
+            ).format(str(exc))
+        )
+
+    finally:
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                try:
+                    ftp.close()
+                except Exception:
+                    pass

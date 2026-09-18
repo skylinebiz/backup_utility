@@ -172,6 +172,11 @@ app_license = "mit"
 
 # before_tests = "backup_utility.install.before_tests"
 
+# `bench migrate` deletes any Scheduled Job Type not declared in
+# hooks.scheduler_events - re-create the dynamically managed backup
+# schedule (see the note at the bottom of this file) right after.
+after_migrate = "backup_utility.backup_utility.doctype.backup_utility.backup_utility.restore_backup_schedule"
+
 # Extend DocType Class
 # ------------------------------
 #
@@ -256,7 +261,8 @@ app_license = "mit"
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
-# Note: the backup schedule is NOT registered here. It is managed dynamically
-# as a "Scheduled Job Type" document, created/updated whenever the
-# "Backup Utility" settings doc is saved (see
-# backup_utility.backup_utility.doctype.backup_utility.backup_utility.update_backup_schedule).
+# Note: the backup schedule is NOT registered under scheduler_events above.
+# It is managed dynamically as a "Scheduled Job Type" document, created/
+# updated whenever the "Backup Utility" settings doc is saved (see
+# backup_utility.backup_utility.doctype.backup_utility.backup_utility.update_backup_schedule)
+# and re-created after every migrate by the after_migrate hook above.
