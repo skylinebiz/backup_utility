@@ -26,17 +26,6 @@ class BackupUtility(Document):
         update_backup_schedule(self)
 
 
-def restore_backup_schedule():
-    # `bench migrate` deletes any "Scheduled Job Type" whose method isn't
-    # declared in an app's hooks.scheduler_events - which is every method
-    # here, since this schedule is managed dynamically rather than via
-    # hooks.py (see the note at the bottom of hooks.py). Re-create it from
-    # the saved settings right after migrate so the schedule survives.
-    update_backup_schedule(
-        frappe.get_single("Backup Utility")
-    )
-
-
 def update_backup_schedule(doc):
 
     # The job record always exists (even when disabled / never
@@ -50,6 +39,8 @@ def update_backup_schedule(doc):
     # Type requires a valid cron_format for frequency "Cron" regardless
     # of "stopped" - it is never evaluated while stopped=1.
     cron = get_backup_cron(doc) or "0 0 * * *"
+
+    scheduler_event = get_scheduler_event()
 
     job_name = frappe.db.exists(
         "Scheduled Job Type",
@@ -83,6 +74,10 @@ def update_backup_schedule(doc):
             job.create_log = 1
             changed = True
 
+        if job.scheduler_event != scheduler_event:
+            job.scheduler_event = scheduler_event
+            changed = True
+
         if changed:
             job.save(ignore_permissions=True)
 
@@ -95,10 +90,37 @@ def update_backup_schedule(doc):
         job.cron_format = cron
         job.stopped = 0 if should_run else 1
         job.create_log = 1
+        job.scheduler_event = scheduler_event
 
         job.insert(ignore_permissions=True)
 
     frappe.db.commit()
+
+
+def get_scheduler_event():
+    # `bench migrate` (sync_jobs -> clear_events) deletes every Scheduled Job
+    # Type whose method isn't declared in hooks.scheduler_events, unless it
+    # is linked to a Scheduler Event (or a Server Script). This schedule is
+    # user-configured at runtime so it can't be declared in hooks.py - the
+    # Scheduler Event link is what makes it persist across migrations.
+    event = frappe.db.exists(
+        "Scheduler Event",
+        {
+            "scheduled_against": "Backup Utility",
+            "method": BACKUP_SCHEDULE_METHOD,
+        },
+    )
+
+    if event:
+        return event
+
+    return frappe.get_doc(
+        {
+            "doctype": "Scheduler Event",
+            "scheduled_against": "Backup Utility",
+            "method": BACKUP_SCHEDULE_METHOD,
+        }
+    ).insert(ignore_permissions=True).name
 
 
 def get_backup_cron(doc):

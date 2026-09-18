@@ -175,7 +175,7 @@ app_license = "mit"
 # `bench migrate` deletes any Scheduled Job Type not declared in
 # hooks.scheduler_events - re-create the dynamically managed backup
 # schedule (see the note at the bottom of this file) right after.
-after_migrate = "backup_utility.backup_utility.doctype.backup_utility.backup_utility.restore_backup_schedule"
+# after_migrate = "backup_utility.backup_utility.doctype.backup_utility.backup_utility.restore_backup_schedule"
 
 # Extend DocType Class
 # ------------------------------
