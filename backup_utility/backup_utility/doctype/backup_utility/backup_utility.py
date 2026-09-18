@@ -26,6 +26,17 @@ class BackupUtility(Document):
         update_backup_schedule(self)
 
 
+def restore_backup_schedule():
+    # `bench migrate` deletes any "Scheduled Job Type" whose method isn't
+    # declared in an app's hooks.scheduler_events - which is every method
+    # here, since this schedule is managed dynamically rather than via
+    # hooks.py (see the note at the bottom of hooks.py). Re-create it from
+    # the saved settings right after migrate so the schedule survives.
+    update_backup_schedule(
+        frappe.get_single("Backup Utility")
+    )
+
+
 def update_backup_schedule(doc):
 
     job_name = frappe.db.exists(
