@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented in this file.
 
+## [2.0.0] - 2026-09-21
+
+### Added
+
+- **S3-compatible object storage uploads** (AWS S3, Cloudflare R2, Backblaze B2, MinIO, ...) as an alternative to FTPS, chosen via the new **Configuration Type** field with its own Bucket, Endpoint URL, Region, Access Key ID, Secret Access Key and Path / Prefix fields. Implemented with the Python standard library only (a minimal AWS Signature V4 client), so there is no new dependency. Large backup files are streamed rather than loaded into memory, and a bucket name pasted into the Endpoint URL is ignored instead of causing a 404.
+- **Test Connection** now works for both FTPS and S3, and tests whichever **Configuration Type** is currently selected in the form, even if unsaved.
+
+### Changed
+
+- **Start Backup Now** now runs through the backup schedule's own `Scheduled Job Type` (`enqueue(force=True)`), the same path Frappe's scheduler uses, instead of running synchronously in the request. It is queued rather than run immediately, so on a busy queue it may wait its turn, and it shows "queued" instead of a final success/failure. `Enabled` only gates the automatic daily schedule, so a manual run works whether or not it is checked.
+- The backup schedule record is now always created (stopped while disabled or without a time) so **Start Backup Now** works from the first save.
+- Backup Log entries say "Upload" instead of "FTP upload", since the backend can now be S3.
+
+### Fixed
+
+- The backup schedule was deleted by `bench migrate`. It is now linked to a Frappe `Scheduler Event`, which migrate leaves alone. The first migrate after upgrading an existing site recreates the job once (new record name, same schedule), and it persists from then on.
+
+### Upgrade notes
+
+- Run `bench migrate` after updating to add the new S3 fields. Existing FTPS setups keep working: sites with no Configuration Type saved are treated as FTPS.
+
 ## [1.3.0] - 2026-09-18
 
 ### Added
