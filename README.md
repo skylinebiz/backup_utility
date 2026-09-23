@@ -4,8 +4,8 @@ A [Frappe](https://frappeframework.com/) app that schedules automated site backu
 
 ## Features
 
-- **Scheduled daily backups** at a time you configure, driven by a dynamically managed cron-based `Scheduled Job Type` (no manual cron setup required).
-- **Manual/on-demand backup** via a whitelisted API method.
+- **Scheduled daily backups** at a time you configure, driven by a dynamically managed cron-based `Scheduled Job Type` (no manual cron setup required), which survives `bench migrate`.
+- **Manual/on-demand backup** via the **Start Backup Now** button (or the underlying whitelisted API method) - works regardless of whether scheduling is enabled, and is disabled in the UI while a backup is already running.
 - **Database + optional files backup** using the standard `bench backup` command (`--with-files` toggle).
 - **Secure FTP upload (FTPS)** of newly created backup files to a remote host, with automatic remote directory creation.
 - **Optional local cleanup** — delete the local copy once it's been uploaded successfully.
@@ -31,6 +31,8 @@ A [Frappe](https://frappeframework.com/) app that schedules automated site backu
 
 Saving the **Backup Utility** doc (`on_update`) creates or updates a `Scheduled Job Type` for `backup_utility.api.backup.ftp_backup_cron`, using a cron expression built from the `When` time (`minute hour * * *` — i.e. once a day). Disabling the utility or clearing the time stops the job instead of deleting it. When the cron fires, it enqueues `execute_backup` on the `long` queue.
 
+This schedule is managed dynamically rather than declared in `hooks.scheduler_events`, which means `bench migrate` would otherwise delete it (it prunes any `Scheduled Job Type` not declared in hooks). An `after_migrate` hook re-creates it from the saved settings immediately after, so the configured schedule survives every migrate.
+
 ### Backup process (`run_backup`)
 
 1. Acquires an exclusive lock (a lock file in the backup directory) so overlapping runs — e.g. a manual trigger firing while the scheduled job is still running — can't race each other. If a backup is already in progress, the run is rejected with a clear error instead of running concurrently.
@@ -46,7 +48,7 @@ Every step is appended to the `Backup Log`'s `Process Log`; routine progress is 
 
 ### Manual trigger
 
-`backup_utility.api.backup.execute_backup` is a whitelisted method restricted to the **System Manager** role. It runs the same backup process synchronously and returns `{"success": true}` — call it from the client, a server script, or `bench execute` to trigger a backup on demand. It raises an error (rather than silently doing nothing) if Backup Utility is disabled or a backup is already running.
+The **Start Backup Now** button on the Backup Utility page calls `backup_utility.api.backup.execute_backup`, a whitelisted method restricted to the **System Manager** role. It runs the same backup process synchronously and returns `{"success": true}` — call it from the client, a server script, or `bench execute` to trigger a backup on demand. It works whether or not **Enabled** (the automatic schedule) is checked, and raises an error if a backup is already running. The button itself is disabled while a backup is in progress, based on `backup_utility.api.backup.get_backup_status`.
 
 ## Installation
 
