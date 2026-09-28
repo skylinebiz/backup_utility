@@ -24,6 +24,7 @@
   "connection_tested",
   "column_break_aqjl",
   "delete_local",
+  "backup_retention_days",
   "username",
   "password",
   "path",
@@ -176,6 +177,14 @@
    "fieldname": "delete_local",
    "fieldtype": "Check",
    "label": "Delete Local Backup after Upload"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.upload == 1",
+   "description": "Number of days to keep backups on the remote storage (S3 / FTPS). Checked after every upload attempt; backups older than this are deleted from the remote only - the local copy is unaffected. Set to 0 to disable.",
+   "fieldname": "backup_retention_days",
+   "fieldtype": "Int",
+   "label": "Backup Retention (Days)"
   },
   {
    "fieldname": "backup_status_section",
