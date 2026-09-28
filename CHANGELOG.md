@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [2.1.0] - 2026-09-28
+
+### Added
+
+- **Backup Retention (Days)** field (0 = disabled). After every upload attempt, backups older than this on the remote storage (S3 / FTPS) are deleted - checked against whatever is already there, not just the files just uploaded. Only touches this app's own backup file types, within the configured Path / Prefix.
+
+### Notes
+
+- Retention is remote-only: it never deletes local backup files. The local copy is still removed only by **Delete Local Backup after Upload** (right after that file's own successful upload) or by **Maximum Backup Size (MB)** cleanup - unrelated to this setting.
+
 ## [2.0.0] - 2026-09-21
 
 ### Added
