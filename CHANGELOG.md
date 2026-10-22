@@ -6,11 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
-- **Backup Retention (Days)** field (0 = disabled). After every upload attempt, backups older than this on the remote storage (S3 / FTPS) are deleted - checked against whatever is already there, not just the files just uploaded. Only touches this app's own backup file types, within the configured Path / Prefix.
+- **Backup Retention (Days)** field (0 = disabled). After a successful upload, backups older than this are deleted from the remote storage (S3 / FTPS) - checked against whatever is already there, not just the files just uploaded.
 
 ### Notes
 
 - Retention is remote-only: it never deletes local backup files. The local copy is still removed only by **Delete Local Backup after Upload** (right after that file's own successful upload) or by **Maximum Backup Size (MB)** cleanup - unrelated to this setting.
+- Retention is deliberately conservative:
+  - Skipped when the upload failed, so a failing upload can never leave the remote without a recent backup.
+  - Only deletes this site's own backup files (name contains the site name and a known backup extension). Other sites' backups and unrelated files sharing the folder/bucket are left alone.
+  - Looks only directly inside the configured Path / Prefix - sub-folders are never touched. Files whose age can't be determined are kept.
+- Low overhead: S3 listings are read one page (1000 keys) at a time, FTPS uses one connection and one directory listing, and the Backup Log gets one summary line per sweep instead of a save per deleted file (individual deletions go to `backup_utility.log`).
 
 ## [2.0.0] - 2026-09-21
 

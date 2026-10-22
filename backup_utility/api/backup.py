@@ -150,6 +150,19 @@ BACKUP_FILE_SUFFIXES = (
 )
 
 
+def is_site_backup_name(filename):
+    # Retention must only ever touch THIS site's backups: the remote
+    # folder/bucket may be shared with other sites or unrelated files.
+    # Frappe names backups "<timestamp>-<site_slug>-<kind>.<ext>" where
+    # the slug is the site name with "." replaced by "_".
+    site_slug = frappe.local.site.replace(".", "_")
+
+    return (
+        filename.endswith(BACKUP_FILE_SUFFIXES)
+        and f"-{site_slug}-" in filename
+    )
+
+
 def get_backup_files(backup_directory):
 
     backup_directory = Path(backup_directory)
@@ -606,13 +619,14 @@ def cleanup_remote_backups_ftp(doc, log):
             entries = [(name, {}) for name in ftp.nlst() if name not in (".", "..")]
 
         deleted_count = 0
+        failed_count = 0
 
         for name, facts in entries:
 
             if facts.get("type") not in (None, "file"):
                 continue
 
-            if not name.endswith(BACKUP_FILE_SUFFIXES):
+            if not is_site_backup_name(name):
                 continue
 
             try:
@@ -631,21 +645,18 @@ def cleanup_remote_backups_ftp(doc, log):
             try:
                 ftp.delete(name)
                 deleted_count += 1
-                append_process_log(
-                    log,
-                    f"Deleted remote backup older than "
-                    f"{retention_days} day(s): {name}"
-                )
+                logger.info(f"Backup Utility - Deleted expired remote backup: {name}")
             except Exception as exc:
-                append_process_log(
-                    log,
-                    f"Failed to delete remote backup {name}: {exc}"
-                )
+                failed_count += 1
+                logger.warning(f"Backup Utility - Failed to delete remote backup {name}: {exc}")
 
+        # One log write for the whole sweep - append_process_log saves
+        # the Backup Log doc each time.
         append_process_log(
             log,
-            f"Remote backup retention cleanup completed. "
-            f"Deleted {deleted_count} file(s)."
+            f"Remote backup retention cleanup completed "
+            f"(older than {retention_days} day(s)). "
+            f"Deleted {deleted_count} file(s), {failed_count} failed."
         )
 
     except Exception as exc:
@@ -869,7 +880,10 @@ class S3Client:
             )
 
     def list_objects(self, bucket, prefix=""):
-        """ListObjectsV2 - returns [{"key": ..., "last_modified": datetime}, ...].
+        """ListObjectsV2 - yields {"key": ..., "last_modified": datetime}
+        one page (<=1000 keys) at a time, so large buckets are never held
+        in memory. Non-recursive: uses delimiter "/" so only objects
+        directly under `prefix` are returned, not those in sub-folders.
 
         last_modified is a naive datetime (UTC, matching S3's own
         timestamps - see cleanup_remote_backups_s3).
@@ -877,12 +891,11 @@ class S3Client:
 
         import xml.etree.ElementTree as ElementTree
 
-        objects = []
         continuation_token = None
 
         while True:
 
-            query = {"list-type": "2"}
+            query = {"list-type": "2", "delimiter": "/"}
 
             if prefix:
                 query["prefix"] = prefix
@@ -901,12 +914,12 @@ class S3Client:
 
             for contents in root.findall(f"{ns}Contents"):
 
-                objects.append({
+                yield {
                     "key": contents.findtext(f"{ns}Key"),
                     "last_modified": parse_s3_timestamp(
                         contents.findtext(f"{ns}LastModified")
                     ),
-                })
+                }
 
             is_truncated = (root.findtext(f"{ns}IsTruncated") or "").lower() == "true"
 
@@ -917,8 +930,6 @@ class S3Client:
 
             if not continuation_token:
                 break
-
-        return objects
 
 
 def parse_s3_timestamp(value):
@@ -1194,8 +1205,30 @@ def cleanup_remote_backups_s3(doc, log):
         region=doc.s3_region,
     )
 
+    deleted_count = 0
+    failed_count = 0
+
     try:
-        objects = client.list_objects(bucket, prefix=prefix)
+        for obj in client.list_objects(bucket, prefix=prefix):
+
+            key = obj["key"]
+            modified = obj["last_modified"]
+
+            if not is_site_backup_name(key.rsplit("/", 1)[-1]):
+                continue
+
+            # Unknown age -> never delete.
+            if not modified or modified >= cutoff:
+                continue
+
+            try:
+                client.delete_object(bucket, key)
+                deleted_count += 1
+                logger.info(f"Backup Utility - Deleted expired remote backup: {key}")
+            except Exception as exc:
+                failed_count += 1
+                logger.warning(f"Backup Utility - Failed to delete remote backup {key}: {exc}")
+
     except Exception as exc:
 
         append_process_log(
@@ -1210,46 +1243,11 @@ def cleanup_remote_backups_s3(doc, log):
 
         return
 
-    deleted_count = 0
-
-    for obj in objects:
-
-        key = obj["key"]
-        modified = obj["last_modified"]
-        filename = key.rsplit("/", 1)[-1]
-
-        if not filename.endswith(BACKUP_FILE_SUFFIXES):
-            continue
-
-        if not modified:
-            append_process_log(
-                log,
-                f"Could not determine age of remote backup "
-                f"{key}, leaving it in place."
-            )
-            continue
-
-        if modified >= cutoff:
-            continue
-
-        try:
-            client.delete_object(bucket, key)
-            deleted_count += 1
-            append_process_log(
-                log,
-                f"Deleted remote backup older than "
-                f"{retention_days} day(s): {key}"
-            )
-        except Exception as exc:
-            append_process_log(
-                log,
-                f"Failed to delete remote backup {key}: {exc}"
-            )
-
     append_process_log(
         log,
-        f"Remote backup retention cleanup completed. "
-        f"Deleted {deleted_count} file(s)."
+        f"Remote backup retention cleanup completed "
+        f"(older than {retention_days} day(s)). "
+        f"Deleted {deleted_count} object(s), {failed_count} failed."
     )
 
 
@@ -1622,9 +1620,7 @@ def run_backup():
                 )
 
             # Remote retention cleanup - isolated from both backup_status
-            # and upload_status, and attempted regardless of whether this
-            # run's own upload succeeded (it targets whatever is already
-            # sitting on the remote, not just the files just uploaded).
+            # and upload_status, and only run after a successful upload.
             #
             # This ONLY deletes files on the remote (FTPS/S3) - it must
             # never touch local disk. The local copy is removed only by
@@ -1633,7 +1629,16 @@ def run_backup():
             # once "Maximum Backup Size (MB)" is exceeded - nothing else.
 
             try:
-                cleanup_remote_backups(doc, log)
+                if upload_success:
+                    cleanup_remote_backups(doc, log)
+                else:
+                    # Never prune the remote while uploads are failing -
+                    # it could leave no recent off-site backup at all.
+                    append_process_log(
+                        log,
+                        "Remote backup retention cleanup skipped because "
+                        "the upload did not complete."
+                    )
             except Exception:
                 append_process_log(
                     log,
