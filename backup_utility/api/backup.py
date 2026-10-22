@@ -6,7 +6,7 @@ import hmac
 import os
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import io
 import urllib.error
@@ -137,6 +137,32 @@ def get_backup_status():
 
 # Backup Files
 
+# Recognized backup file extensions - used both to pick up local files
+# this app created and to recognize which remote files are safe for
+# retention cleanup to touch (see cleanup_remote_backups_*).
+BACKUP_FILE_SUFFIXES = (
+    ".json",
+    ".sql",
+    ".sql.gz",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+)
+
+
+def is_site_backup_name(filename):
+    # Retention must only ever touch THIS site's backups: the remote
+    # folder/bucket may be shared with other sites or unrelated files.
+    # Frappe names backups "<timestamp>-<site_slug>-<kind>.<ext>" where
+    # the slug is the site name with "." replaced by "_".
+    site_slug = frappe.local.site.replace(".", "_")
+
+    return (
+        filename.endswith(BACKUP_FILE_SUFFIXES)
+        and f"-{site_slug}-" in filename
+    )
+
+
 def get_backup_files(backup_directory):
 
     backup_directory = Path(backup_directory)
@@ -144,21 +170,12 @@ def get_backup_files(backup_directory):
     if not backup_directory.exists():
         return set()
 
-    allowed_suffixes = (
-        ".json",
-        ".sql",
-        ".sql.gz",
-        ".tar",
-        ".tar.gz",
-        ".tgz",
-    )
-
     return {
         file_path
         for file_path in backup_directory.iterdir()
         if (
             file_path.is_file()
-            and file_path.name.endswith(allowed_suffixes)
+            and file_path.name.endswith(BACKUP_FILE_SUFFIXES)
         )
     }
 
@@ -540,6 +557,132 @@ def upload_backups_to_ftp(
     return all_success
 
 
+def get_ftp_entry_modified_time(ftp, name, facts):
+    # MLSD gives us the modify time fact for free; when the server
+    # doesn't support MLSD (or a listing omits it), fall back to MDTM
+    # for that one file. Both are specified (RFC 3659) as UTC, so the
+    # result is a naive datetime comparable against a UTC "now".
+    modify = facts.get("modify")
+
+    if modify:
+        return datetime.strptime(modify[:14], "%Y%m%d%H%M%S")
+
+    response = ftp.sendcmd(f"MDTM {name}")
+    # e.g. "213 20260921120000"
+    return datetime.strptime(response.split()[-1][:14], "%Y%m%d%H%M%S")
+
+
+def cleanup_remote_backups_ftp(doc, log):
+    # Deletes remote files only - see the note above the call site in
+    # run_backup(). Never touches local disk.
+
+    retention_days = cint(doc.backup_retention_days)
+
+    if retention_days <= 0:
+        append_process_log(
+            log,
+            "Remote backup retention not configured. Remote cleanup skipped."
+        )
+        return
+
+    host = doc.host
+    port = doc.port or 21
+    username = doc.username
+    password = doc.get_password("password")
+    path = doc.path or "/"
+
+    if not (host and username and password):
+        append_process_log(
+            log,
+            "Remote backup retention cleanup skipped: FTP settings incomplete."
+        )
+        return
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=retention_days)
+
+    ftp = None
+
+    try:
+
+        ftp = ftplib.FTP_TLS()
+        ftp.connect(host=host, port=cint(port or 21), timeout=60)
+        ftp.auth()
+        ftp.login(user=username, passwd=password)
+        ftp.prot_p()
+        ftp_change_directory(ftp, path)
+
+        try:
+            entries = list(ftp.mlsd())
+        except Exception:
+            # Server doesn't support MLSD - list names only, look up
+            # each one's modified time individually via MDTM below.
+            entries = [(name, {}) for name in ftp.nlst() if name not in (".", "..")]
+
+        deleted_count = 0
+        failed_count = 0
+
+        for name, facts in entries:
+
+            if facts.get("type") not in (None, "file"):
+                continue
+
+            if not is_site_backup_name(name):
+                continue
+
+            try:
+                modified = get_ftp_entry_modified_time(ftp, name, facts)
+            except Exception as exc:
+                append_process_log(
+                    log,
+                    f"Could not determine age of remote backup "
+                    f"{name}, leaving it in place: {exc}"
+                )
+                continue
+
+            if modified >= cutoff:
+                continue
+
+            try:
+                ftp.delete(name)
+                deleted_count += 1
+                logger.info(f"Backup Utility - Deleted expired remote backup: {name}")
+            except Exception as exc:
+                failed_count += 1
+                logger.warning(f"Backup Utility - Failed to delete remote backup {name}: {exc}")
+
+        # One log write for the whole sweep - append_process_log saves
+        # the Backup Log doc each time.
+        append_process_log(
+            log,
+            f"Remote backup retention cleanup completed "
+            f"(older than {retention_days} day(s)). "
+            f"Deleted {deleted_count} file(s), {failed_count} failed."
+        )
+
+    except Exception as exc:
+
+        append_process_log(
+            log,
+            f"Remote backup retention cleanup failed: {exc}"
+        )
+
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Backup Utility - Remote Cleanup Failed (FTP)"
+        )
+
+    finally:
+
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                try:
+                    ftp.close()
+                except Exception:
+                    pass
+
+
 # S3-compatible Object Storage (AWS S3, Cloudflare R2, Backblaze B2, ...)
 #
 # Implemented with the standard library only (urllib + hashlib + hmac -
@@ -621,7 +764,7 @@ class S3Client:
         self.host = host or f"https://s3.{self.region}.amazonaws.com"
         self.host_header = urllib.parse.urlsplit(self.host).netloc
 
-    def _request(self, method, path, headers=None, body=b""):
+    def _request(self, method, path, headers=None, body=b"", query=None):
 
         headers = {key.lower(): value for key, value in (headers or {}).items()}
 
@@ -637,6 +780,12 @@ class S3Client:
 
         canonical_uri = urllib.parse.quote(path, safe="/-_.~")
 
+        canonical_query = "&".join(
+            f"{urllib.parse.quote(str(k), safe='-_.~')}="
+            f"{urllib.parse.quote(str(v), safe='-_.~')}"
+            for k, v in sorted((query or {}).items())
+        )
+
         headers["host"] = self.host_header
         headers["x-amz-date"] = amz_date
         headers["x-amz-content-sha256"] = payload_hash
@@ -650,7 +799,7 @@ class S3Client:
         canonical_request = "\n".join([
             method,
             canonical_uri,
-            "",  # no query string used by any operation here
+            canonical_query,
             canonical_headers,
             signed_headers,
             payload_hash,
@@ -676,8 +825,12 @@ class S3Client:
 
         request_body = body if (hasattr(body, "read") or body) else None
 
+        url = self.host + canonical_uri
+        if canonical_query:
+            url = f"{url}?{canonical_query}"
+
         request = urllib.request.Request(
-            self.host + canonical_uri,
+            url,
             data=request_body,
             method=method,
             headers=headers,
@@ -725,6 +878,76 @@ class S3Client:
                 headers=headers,
                 body=file_handle,
             )
+
+    def list_objects(self, bucket, prefix=""):
+        """ListObjectsV2 - yields {"key": ..., "last_modified": datetime}
+        one page (<=1000 keys) at a time, so large buckets are never held
+        in memory. Non-recursive: uses delimiter "/" so only objects
+        directly under `prefix` are returned, not those in sub-folders.
+
+        last_modified is a naive datetime (UTC, matching S3's own
+        timestamps - see cleanup_remote_backups_s3).
+        """
+
+        import xml.etree.ElementTree as ElementTree
+
+        continuation_token = None
+
+        while True:
+
+            query = {"list-type": "2", "delimiter": "/"}
+
+            if prefix:
+                query["prefix"] = prefix
+
+            if continuation_token:
+                query["continuation-token"] = continuation_token
+
+            _, body = self._request("GET", f"/{bucket}", query=query)
+
+            root = ElementTree.fromstring(body)
+
+            # S3 (and most compatible providers) responds with a
+            # namespaced XML document - strip it so tag lookups below
+            # don't need to spell it out everywhere.
+            ns = root.tag.split("}")[0] + "}" if root.tag.startswith("{") else ""
+
+            for contents in root.findall(f"{ns}Contents"):
+
+                yield {
+                    "key": contents.findtext(f"{ns}Key"),
+                    "last_modified": parse_s3_timestamp(
+                        contents.findtext(f"{ns}LastModified")
+                    ),
+                }
+
+            is_truncated = (root.findtext(f"{ns}IsTruncated") or "").lower() == "true"
+
+            if not is_truncated:
+                break
+
+            continuation_token = root.findtext(f"{ns}NextContinuationToken")
+
+            if not continuation_token:
+                break
+
+
+def parse_s3_timestamp(value):
+    # e.g. "2026-09-21T10:15:30.000Z" or "2026-09-21T10:15:30Z" - always
+    # UTC (the "Z" suffix). Returns a naive datetime representing that
+    # UTC instant, comparable against a naive UTC "now".
+    if not value:
+        return None
+
+    value = value.rstrip("Z")
+
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+
+    return None
 
 
 def test_s3_connection(
@@ -946,6 +1169,88 @@ def upload_backups_to_s3(
     return all_success
 
 
+def cleanup_remote_backups_s3(doc, log):
+    # Deletes remote objects only - see the note above the call site in
+    # run_backup(). Never touches local disk.
+
+    retention_days = cint(doc.backup_retention_days)
+
+    if retention_days <= 0:
+        append_process_log(
+            log,
+            "Remote backup retention not configured. Remote cleanup skipped."
+        )
+        return
+
+    bucket = doc.s3_bucket
+    access_key_id = doc.s3_access_key_id
+    secret_access_key = doc.get_password("s3_secret_access_key")
+
+    if not (bucket and access_key_id and secret_access_key):
+        append_process_log(
+            log,
+            "Remote backup retention cleanup skipped: S3 settings incomplete."
+        )
+        return
+
+    prefix_path = (doc.s3_path or "").strip().strip("/")
+    prefix = f"{prefix_path}/" if prefix_path else ""
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=retention_days)
+
+    client = S3Client(
+        access_key_id,
+        secret_access_key,
+        endpoint_url=doc.s3_endpoint_url,
+        region=doc.s3_region,
+    )
+
+    deleted_count = 0
+    failed_count = 0
+
+    try:
+        for obj in client.list_objects(bucket, prefix=prefix):
+
+            key = obj["key"]
+            modified = obj["last_modified"]
+
+            if not is_site_backup_name(key.rsplit("/", 1)[-1]):
+                continue
+
+            # Unknown age -> never delete.
+            if not modified or modified >= cutoff:
+                continue
+
+            try:
+                client.delete_object(bucket, key)
+                deleted_count += 1
+                logger.info(f"Backup Utility - Deleted expired remote backup: {key}")
+            except Exception as exc:
+                failed_count += 1
+                logger.warning(f"Backup Utility - Failed to delete remote backup {key}: {exc}")
+
+    except Exception as exc:
+
+        append_process_log(
+            log,
+            f"Remote backup retention cleanup failed: {exc}"
+        )
+
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Backup Utility - Remote Cleanup Failed (S3)"
+        )
+
+        return
+
+    append_process_log(
+        log,
+        f"Remote backup retention cleanup completed "
+        f"(older than {retention_days} day(s)). "
+        f"Deleted {deleted_count} object(s), {failed_count} failed."
+    )
+
+
 # Upload dispatch - routes to the configured backend (FTPS / S3).
 
 def upload_backups(
@@ -958,6 +1263,14 @@ def upload_backups(
         return upload_backups_to_s3(doc, backup_files, log)
 
     return upload_backups_to_ftp(doc, backup_files, log)
+
+
+def cleanup_remote_backups(doc, log):
+
+    if get_upload_type(doc) == UPLOAD_TYPE_S3:
+        return cleanup_remote_backups_s3(doc, log)
+
+    return cleanup_remote_backups_ftp(doc, log)
 
 
 # Main Backup
@@ -1304,6 +1617,36 @@ def run_backup():
                 append_process_log(
                     log,
                     "Upload completed with failures."
+                )
+
+            # Remote retention cleanup - isolated from both backup_status
+            # and upload_status, and only run after a successful upload.
+            #
+            # This ONLY deletes files on the remote (FTPS/S3) - it must
+            # never touch local disk. The local copy is removed only by
+            # "Delete Local Backup after Upload" (right after its own
+            # successful upload, above) or by cleanup_old_backups below
+            # once "Maximum Backup Size (MB)" is exceeded - nothing else.
+
+            try:
+                if upload_success:
+                    cleanup_remote_backups(doc, log)
+                else:
+                    # Never prune the remote while uploads are failing -
+                    # it could leave no recent off-site backup at all.
+                    append_process_log(
+                        log,
+                        "Remote backup retention cleanup skipped because "
+                        "the upload did not complete."
+                    )
+            except Exception:
+                append_process_log(
+                    log,
+                    "Remote backup retention cleanup failed unexpectedly."
+                )
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "Backup Utility - Remote Cleanup Failed"
                 )
 
         else:
