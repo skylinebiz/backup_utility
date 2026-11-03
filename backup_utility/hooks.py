@@ -4,6 +4,17 @@ app_publisher = "Harshit Jain"
 app_description = "Schedule Backup of Site"
 app_email = "harshit@skylinebiz.in"
 app_license = "mit"
+app_home = "/desk/backup-utility"
+app_logo_url = "/assets/backup_utility/images/backup-utility-logo.svg"
+
+add_to_apps_screen = [
+    {
+        "name": app_name,
+        "logo": app_logo_url,
+        "title": app_title,
+        "route": app_home,
+    }
+]
 
 # Apps
 # ------------------
