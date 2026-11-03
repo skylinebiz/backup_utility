@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [2.2.0] - 2026-11-03
+
+### Added
+
+- **App icon** — the app now has its own icon (a "B" tile, `backup-utility-logo.svg`) on the Apps screen, set through `app_logo_url` / `add_to_apps_screen` in `hooks.py`.
+
 ## [2.1.0] - 2026-09-28
 
 ### Added
