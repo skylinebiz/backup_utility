@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [2.2.1] - 2026-11-19
+
+### Changed
+
+- **App icon** — replaced the grey "B" text tile with a drawn icon: a violet clock inside a circular arrow, for scheduled backups, on a rounded square (`backup-utility-logo.svg`). It has no text, so it stays readable at sidebar size. Hard-refresh browsers to see it.
+
 ## [2.2.0] - 2026-11-03
 
 ### Added
